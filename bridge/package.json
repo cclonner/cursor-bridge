@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node server.js",
-    "mobile": "node attach.js"
+    "mobile": "node attach.js",
+    "install-hooks": "node hooks/install-hooks.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

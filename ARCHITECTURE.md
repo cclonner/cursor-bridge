@@ -6,25 +6,20 @@
 4. App TLS = end-to-end trust; iroh = transport only.
 5. Sidecar: Node bridge + Rust tunnel; keepers survive bridge restart.
 
-## Implemented (v0.1)
+## Implemented (v0.2)
 
-- `bridge/server.js` — HTTPS/WSS, pairing, sessions, UDP/mDNS discovery
-- `bridge/keeper.js` — PTY owner; IPC via TCP `127.0.0.1` (Windows-friendly)
-- `bridge/certs.js` — self-signed TLS without openssl (`selfsigned`)
-- `bridge/attach.js` — `cursor-mobile` local client
-- `bridge/web/` — xterm UI (local browser)
-- Windows: loopback on main port = local trust; `agent.cmd` auto-resolve
+- `bridge/server.js` — HTTPS/WSS, pairing, sessions, UDP/mDNS, STT `/stt`, `/hook`, iroh control
+- `bridge/keeper.js` — PTY owner; IPC via TCP `127.0.0.1`
+- `bridge/certs.js` — self-signed TLS (`selfsigned`)
+- `bridge/attach.js` — `cursor-mobile`
+- `bridge/web/` — xterm UI
+- `bridge/hooks/` — Cursor Agent hooks → push (`install-hooks.js`)
+- `bridge/stt.py` — faster-whisper worker
+- `tunnel/` — `cursor-tunnel` (iroh), Windows+Unix secret key
+- `android/` — `com.q.cursorbridge` (LAN/QR/beacon/tunnel hooks)
 
-## Differences vs Claude Bridge
+## Hooks (Cursor)
 
-- Spawn Cursor CLI `agent` instead of `claude`
-- TCP IPC instead of unix sockets
-- TLS via `selfsigned` (no openssl)
-- Beacon/QR: `CURSOR_BRIDGE?` / `{ crb: 1, ... }`
-- Windows primary + Linux
-
-## Not yet / partial
-
-- Android: исходники портированы (`com.q.cursorbridge`), сборка APK нужен SDK
-- `cursor-tunnel`: собран под Windows (`bridge/bin/cursor-tunnel.exe`), ALPN `cursor-bridge/1`
-- STT / hooks как у Claude — опционально позже
+Global `~/.cursor/hooks.json` → `bridge/hooks/bridge-hook.js`.
+Only active when keeper sets `CURSOR_BRIDGE_SESSION` (+ `CURSOR_BRIDGE_PORT`).
+Maps Cursor events → bridge statuses / notify (Stop, waiting, working).

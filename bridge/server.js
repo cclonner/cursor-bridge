@@ -390,7 +390,13 @@ async function createSession({ cwd, command, args, title, local }) {
     scrollbackBytes: CONFIG.scrollbackBytes || 262144,
     ipcPort,
   };
-  const childEnv = { ...process.env, ...CONFIG.env, CURSOR_BRIDGE_SESSION: id, FORCE_COLOR: '3' };
+  const childEnv = {
+    ...process.env,
+    ...CONFIG.env,
+    CURSOR_BRIDGE_SESSION: id,
+    CURSOR_BRIDGE_PORT: String(CONFIG.port),
+    FORCE_COLOR: '3',
+  };
   const metaPath = path.join(SESS_DIR, id + '.json');
   fs.writeFileSync(metaPath, JSON.stringify(meta));
 
@@ -464,7 +470,7 @@ let sttQueue = [];
 
 function ensureStt() {
   if (sttProc) return;
-  sttProc = spawn(CONFIG.sttPython || 'python3.11', [path.join(__dirname, 'stt.py')], {
+  sttProc = spawn(CONFIG.sttPython || (process.platform === 'win32' ? 'python' : 'python3'), [path.join(__dirname, 'stt.py')], {
     env: {
       ...process.env,
       STT_MODEL: CONFIG.sttModel || 'large-v3',
@@ -557,8 +563,13 @@ function startTunnel() {
     return;
   }
   // бесхозные туннели прошлых запусков (у них тот же ключ/NodeId) — убрать
-  // без шелла: путь установки не интерпретируется как команда
-  try { spawnSync('pkill', ['-f', TUNNEL_BIN + ' listen']); } catch { /* нет прав/нет процессов */ }
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/F', '/IM', 'cursor-tunnel.exe'], { stdio: 'ignore', windowsHide: true });
+    } else {
+      spawnSync('pkill', ['-f', TUNNEL_BIN + ' listen'], { stdio: 'ignore' });
+    }
+  } catch { /* нет прав/нет процессов */ }
   writeAllowFile(); // актуальный allowlist к моменту старта туннеля
   const child = spawn(TUNNEL_BIN, [
     'listen',
@@ -759,15 +770,21 @@ function httpHandler(req, res) {
       try { payload = JSON.parse(body || '{}'); } catch { /* keep {} */ }
       const sid = req.headers['x-bridge-session'] || payload.bridge_session || '';
       const event = payload.hook_event_name || 'Notification';
-      const message = payload.message || payload.notification || (event === 'Stop' ? 'Claude завершил ответ' : 'Событие Cursor Agent');
+      const message = payload.message || payload.notification || (event === 'Stop' ? 'Agent завершил ответ' : 'Событие Cursor Agent');
       const s = sessions.get(sid);
       // статус сессии для вкладок: работает / ждёт ответа / свободна.
-      // PostToolUse — ответ на запрос разрешения дан (в т.ч. на ПК): Claude снова работает.
       const status = {
         UserPromptSubmit: 'working',
         PostToolUse: 'working',
         Notification: 'waiting',
         Stop: 'idle',
+        // Cursor hook names (если хук не смапил)
+        beforeSubmitPrompt: 'working',
+        afterAgentResponse: 'working',
+        stop: 'idle',
+        sessionEnd: 'idle',
+        beforeShellExecution: 'waiting',
+        beforeMCPExecution: 'waiting',
       }[event];
       // отдельное событие для телефона: по 'working' он гасит устаревшие
       // уведомления — в том числе для сессий, которых уже нет в списке
@@ -1101,6 +1118,15 @@ async function main() {
     console.log('');
     qrcode.generate(pairPayload, { small: true });
     console.log(`  Отпечаток сертификата: ${FINGERPRINT.slice(0, 16)}…`);
+    try {
+      require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'hooks', 'install-hooks.js'), '--quiet'], {
+        stdio: 'inherit',
+        windowsHide: true,
+      });
+    } catch (e) {
+      console.error('  Hooks не установлены автоматически:', e.message);
+      console.error('  Вручную: node hooks/install-hooks.js');
+    }
   });
 }
 

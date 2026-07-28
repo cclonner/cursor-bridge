@@ -8,5 +8,9 @@
   "env": {},
   "scrollbackBytes": 1048576,
   "mdnsName": "cursor-bridge",
-  "maxSessions": 24
+  "maxSessions": 24,
+  "sttPython": "python",
+  "sttModel": "large-v3",
+  "sttLanguage": "ru",
+  "sttMaxQueue": 4
 }
