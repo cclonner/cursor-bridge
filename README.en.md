@@ -35,7 +35,7 @@ cd tunnel && cargo build --release
 
 ### Android
 
-Download the APK from [Releases](https://github.com/cclonner/cursor-bridge/releases) (`cursor-bridge-v0.1.0.apk`), allow unknown sources, install.
+Download the APK from [Releases](https://github.com/cclonner/cursor-bridge/releases) (`cursor-bridge-v0.1.1.apk`), allow unknown sources, install. Includes `libcursortunnel.so` for p2p.
 
 Or build: `cd android && ./gradlew assembleDebug`
 

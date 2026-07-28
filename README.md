@@ -132,7 +132,7 @@ systemctl --user enable --now cursor-bridge
 
 ### 2. Android
 
-Скачай APK из [Releases](https://github.com/cclonner/cursor-bridge/releases) (`cursor-bridge-v0.1.0.apk`) и установи (разрешить неизвестные источники). APK подписан отладочным ключом.
+Скачай APK из [Releases](https://github.com/cclonner/cursor-bridge/releases) (`cursor-bridge-v0.1.1.apk`) и установи (разрешить неизвестные источники). APK подписан отладочным ключом, внутри есть `libcursortunnel.so` (p2p).
 
 Или собрать самому:
 
@@ -142,10 +142,15 @@ cd android
 # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Для p2p на телефоне — `libcursortunnel.so` (aarch64) из кросс-сборки `tunnel/` (см. ARCHITECTURE). Без него LAN работает.
+Кросс-сборка туннеля под телефон (если пересобираешь):
 
-Сопряжение: QR с моста или код вручную.
-### 3. Hooks (push)
+```bash
+# NDK + rustup target aarch64-linux-android
+cargo build --release --target aarch64-linux-android
+# → android/app/src/main/jniLibs/arm64-v8a/libcursortunnel.so
+```
+
+Сопряжение: QR с моста или код вручную.### 3. Hooks (push)
 
 При `npm start` хуки ставятся в `~/.cursor/hooks.json`. Скрипт `bridge/hooks/bridge-hook.js` шлёт события на `/hook` только если в окружении есть `CURSOR_BRIDGE_SESSION` (ставит keeper).
 
