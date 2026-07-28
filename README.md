@@ -1,47 +1,57 @@
 # Cursor Bridge
 
-Зеркалируй и управляй сессиями [Cursor CLI](https://cursor.com/docs/cli/overview) (`agent`) со смартфона.
-Напрямую между устройствами: LAN первым, вне сети — p2p-туннель (iroh/QUIC). Без обязательного облака.
+Зеркалируй и управляй сессиями [Cursor CLI](https://cursor.com/docs/cli/overview) (`agent`) со смартфона или браузера.
+LAN первым, вне сети — p2p (iroh/QUIC, опционально). Без обязательного облака.
 
 Вдохновлено [HelpFreedom/claude-bridge](https://github.com/HelpFreedom/claude-bridge) (GPL-3.0).
-Адаптация под Cursor Agent CLI вместо Claude Code.
 
-## Статус
+## Быстрый старт (ПК)
 
-Скелет репозитория. Реализация моста / туннеля / Android — в работе.
-
-## Архитектура (цель)
-
-```
-ПК (Windows/Linux)                          Телефон (Android)
-─────────────────                           ─────────────────
-Cursor CLI `agent` (PTY)                    WebView + xterm.js
-        │                                            │
-   keeper.js ── unix/named pipe                      │
-        │                                            │
-   server.js (WSS + TLS pin) ◄── LAN (mDNS/UDP) ─────┤
-        │                                            │
-   cursor-tunnel (iroh)  ◄──── p2p QUIC ─────────────┘
+```bash
+cd bridge
+npm install
+npm start
 ```
 
-1. Телефон ищет ПК в LAN (mDNS + UDP-маяк).
-2. Нет LAN → auto iroh/QUIC (ticket, NodeId, allowlist).
-3. LAN вернулся → снова локальный путь.
-4. TLS pin end-to-end; iroh только транспорт.
+Открой `https://127.0.0.1:8790/` (самоподписанный TLS — принять предупреждение).
+Локальный доступ с ПК доверен без токена (loopback).
 
-## Структура
+Утилита:
 
-| Каталог | Назначение |
-|---------|------------|
-| `bridge/` | Node.js мост: PTY keepers, WSS, discovery, pairing |
-| `tunnel/` | Rust sidecar: TCP-over-iroh (`cursor-tunnel`) |
-| `android/` | Клиент (позже) |
+```bash
+node attach.js          # новая сессия agent в текущем каталоге
+node attach.js -l       # список сессий
+node attach.js -a       # подключиться
+node attach.js --qr     # QR / код сопряжения
+```
 
-## Требования (план)
+Требования: Node.js 18+, Cursor CLI (`agent`). Windows и Linux.
 
-- ПК: Node.js 18+, Cursor CLI (`agent` в PATH)
-- Опционально: Rust (p2p), Android 8+
+## Конфиг
+
+`bridge/config.json` (из `config.example.json`):
+
+| Ключ | Назначение |
+|------|------------|
+| `port` | Порт моста (8790) |
+| `agentCommand` | `agent` или полный путь к `agent.cmd` |
+| `projects` | Белый список cwd для удалённых устройств |
+| `defaultCwd` | Каталог по умолчанию |
+
+## Архитектура
+
+См. [ARCHITECTURE.md](ARCHITECTURE.md).
+
+- `keeper.js` — PTY живёт отдельно от моста (IPC: TCP 127.0.0.1)
+- TLS через `selfsigned` (openssl не нужен)
+- UDP-маяк `CURSOR_BRIDGE?` на port+1, mDNS `cursor-bridge`
+- iroh-туннель: собрать `tunnel/` → `bridge/bin/cursor-tunnel` (позже)
+
+## Android
+
+Клиент пока не портирован. Локальный web UI уже работает.
+План: форк android из claude-bridge под beacon/QR `crb`.
 
 ## Лицензия
 
-GNU GPL v3.0 — совместимо с upstream claude-bridge.
+GNU GPL v3.0.

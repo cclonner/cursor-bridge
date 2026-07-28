@@ -2,8 +2,11 @@
   "port": 8790,
   "host": "0.0.0.0",
   "agentCommand": "agent",
+  "agentArgs": [],
   "projects": [],
   "defaultCwd": "",
   "env": {},
-  "scrollbackBytes": 1048576
+  "scrollbackBytes": 1048576,
+  "mdnsName": "cursor-bridge",
+  "maxSessions": 24
 }
