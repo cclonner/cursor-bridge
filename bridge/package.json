@@ -1,0 +1,18 @@
+{
+  "name": "cursor-bridge",
+  "version": "0.0.1",
+  "private": true,
+  "description": "LAN + p2p bridge: mirror and control Cursor CLI agent sessions from a phone",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "bonjour-service": "^1.3.0",
+    "node-pty": "^1.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.18.0"
+  }
+}

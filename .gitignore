@@ -1,0 +1,17 @@
+node_modules/
+bridge/config.json
+bridge/certs/
+bridge/bin/
+*.pem
+*.key
+.env
+.DS_Store
+Thumbs.db
+target/
+android/.gradle/
+android/app/build/
+android/local.properties
+*.apk
+*.iml
+.idea/
+.vscode/

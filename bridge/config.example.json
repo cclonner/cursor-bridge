@@ -1,0 +1,9 @@
+{
+  "port": 8790,
+  "host": "0.0.0.0",
+  "agentCommand": "agent",
+  "projects": [],
+  "defaultCwd": "",
+  "env": {},
+  "scrollbackBytes": 1048576
+}
