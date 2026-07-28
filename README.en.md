@@ -35,9 +35,9 @@ cd tunnel && cargo build --release
 
 ### Android
 
-```bash
-cd android && ./gradlew assembleDebug
-```
+Download the APK from [Releases](https://github.com/cclonner/cursor-bridge/releases) (`cursor-bridge-v0.1.0.apk`), allow unknown sources, install.
+
+Or build: `cd android && ./gradlew assembleDebug`
 
 ### Hooks / STT
 
