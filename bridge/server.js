@@ -509,7 +509,14 @@ function transcribe(file) {
 // Включается только явно: cursor-mobile --device -> «i».
 
 const INET_FILE = path.join(__dirname, 'internet.json');
-const TUNNEL_BIN = path.join(__dirname, 'bin', 'cursor-tunnel');
+const TUNNEL_BIN = (() => {
+  const base = path.join(__dirname, 'bin', 'cursor-tunnel');
+  if (process.platform === 'win32') {
+    const exe = base + '.exe';
+    if (fs.existsSync(exe)) return exe;
+  }
+  return base;
+})();
 const TUNNEL_PORT = CONFIG.port + 2; // локальный порт для трафика из туннеля
 // allowlist iroh-узлов: телефон регистрирует свой NodeId (по LAN, через
 // защищённый WS), сюда пишутся id всех сопряжённых устройств. Туннель

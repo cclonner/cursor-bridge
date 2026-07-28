@@ -1,0 +1,54 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.q.cursorbridge'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.q.cursorbridge"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // cursor-tunnel (iroh p2p) лежит в jniLibs как libcursortunnel.so и
+    // запускается как процесс: для exec библиотека должна быть распакована
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+}
+
+// Web-интерфейс вкладывается в APK и отдаётся локальным шлюзом:
+// интерфейс приложения живёт даже при выключенном ПК.
+tasks.register('syncWebAssets', Copy) {
+    from '../../bridge/web'
+    into 'src/main/assets/web'
+}
+tasks.register('syncVendorAssets', Copy) {
+    from '../../bridge/node_modules/@xterm/xterm/lib/xterm.js',
+         '../../bridge/node_modules/@xterm/xterm/css/xterm.css',
+         '../../bridge/node_modules/@xterm/addon-fit/lib/addon-fit.js'
+    into 'src/main/assets/web/vendor'
+}
+preBuild.dependsOn 'syncWebAssets', 'syncVendorAssets'

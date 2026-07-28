@@ -23,8 +23,8 @@
 - Beacon/QR: `CURSOR_BRIDGE?` / `{ crb: 1, ... }`
 - Windows primary + Linux
 
-## Not yet
+## Not yet / partial
 
-- Android client port
-- Full iroh `cursor-tunnel` binary (skeleton in `tunnel/`)
-- STT / Claude-style hooks
+- Android: исходники портированы (`com.q.cursorbridge`), сборка APK нужен SDK
+- `cursor-tunnel`: собран под Windows (`bridge/bin/cursor-tunnel.exe`), ALPN `cursor-bridge/1`
+- STT / hooks как у Claude — опционально позже

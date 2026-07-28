@@ -49,8 +49,18 @@ node attach.js --qr     # QR / код сопряжения
 
 ## Android
 
-Клиент пока не портирован. Локальный web UI уже работает.
-План: форк android из claude-bridge под beacon/QR `crb`.
+Пакет `com.q.cursorbridge`. Исходники в `android/` (порт с claude-bridge).
+
+```bash
+cd android
+./gradlew assembleDebug
+# APK: app/build/outputs/apk/debug/app-debug.apk
+```
+
+Нужны Android SDK + (для p2p) `jniLibs/.../libcursortunnel.so` из сборки `tunnel/`.
+Без NDK/туннеля LAN-режим работает.
+
+Сопряжение: QR `{ crb: 1, host, port, code, fp }` или код с моста.
 
 ## Лицензия
 

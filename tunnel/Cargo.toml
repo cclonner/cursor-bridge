@@ -17,6 +17,9 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 opt-level = "z"
 lto = true
