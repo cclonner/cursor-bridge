@@ -3,6 +3,10 @@
 **Mirror and control [Cursor CLI](https://cursor.com/docs/cli/overview) (`agent`) sessions from your phone.**
 Direct device-to-device: LAN first, p2p (iroh/QUIC) when away. No mandatory cloud.
 
+> **Based on the original:** [HelpFreedom/claude-bridge](https://github.com/HelpFreedom/claude-bridge)
+> (Claude Code → phone). This repo adapts that stack for **Cursor CLI**.
+> See [NOTICE](NOTICE), [AUTHORS.md](AUTHORS.md).
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 🇷🇺 [Russian](README.md) · 🇬🇧 English

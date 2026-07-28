@@ -1,0 +1,14 @@
+# NOTICE / Уведомление об авторских правах
+
+Cursor Bridge — производная работа (fork / adaptation) проекта:
+
+  HelpFreedom/claude-bridge
+  https://github.com/HelpFreedom/claude-bridge
+  Автор: Black Triangle (@HelpFreedom)
+  Лицензия: GNU GPL v3
+
+Оригинал создан для Claude Code. Этот репозиторий адаптирует ту же
+архитектуру (LAN + iroh, Android, PTY keepers, hooks) под Cursor CLI (`agent`).
+
+Сохраняйте атрибуцию upstream при распространении и модификациях (GPL-3.0).
+См. также AUTHORS.md и LICENSE.

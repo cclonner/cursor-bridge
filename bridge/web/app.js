@@ -725,28 +725,45 @@ $('#voiceCancel').addEventListener('click', () => { window.AndroidSTT.cancel(); 
 $('#voiceAccept').addEventListener('click', () => voiceTranscribe('accept'));
 $('#voiceSend').addEventListener('click', () => voiceTranscribe('send'));
 
-const sendBtn = $('#send');
-sendBtn.addEventListener('contextmenu', (e) => e.preventDefault());
-sendBtn.addEventListener('pointerdown', (e) => {
-  voice.suppressClick = false;
-  if (!voiceAvailable()) return;
-  // захват указателя: палец может дрожать и уезжать с кнопки —
-  // события всё равно приходят сюда, запись не оборвётся
-  try { sendBtn.setPointerCapture(e.pointerId); } catch {}
-  voice.pressTimer = setTimeout(voiceBegin, 350);
-});
-const endPress = (e) => {
-  clearTimeout(voice.pressTimer);
-  try { sendBtn.releasePointerCapture(e.pointerId); } catch {}
-  if (voice.recording) voiceRelease();
-};
-sendBtn.addEventListener('pointerup', endPress);
-sendBtn.addEventListener('pointercancel', endPress);
-sendBtn.addEventListener('click', (e) => {
-  if (voice.suppressClick) { e.preventDefault(); return; }
-  sendMessage();
-});
+function bindVoiceHold(btn, { onShortClick } = {}) {
+  if (!btn) return;
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  btn.addEventListener('pointerdown', (e) => {
+    voice.suppressClick = false;
+    if (!voiceAvailable()) return;
+    try { btn.setPointerCapture(e.pointerId); } catch {}
+    voice.pressTimer = setTimeout(voiceBegin, 350);
+  });
+  const endPress = (e) => {
+    clearTimeout(voice.pressTimer);
+    try { btn.releasePointerCapture(e.pointerId); } catch {}
+    if (voice.recording) voiceRelease();
+  };
+  btn.addEventListener('pointerup', endPress);
+  btn.addEventListener('pointercancel', endPress);
+  btn.addEventListener('click', (e) => {
+    if (voice.suppressClick) { e.preventDefault(); return; }
+    if (onShortClick) onShortClick(e);
+  });
+}
 
+const sendBtn = $('#send');
+bindVoiceHold(sendBtn, { onShortClick: () => sendMessage() });
+
+const micBtn = $('#micBtn');
+if (micBtn) {
+  if (!voiceAvailable()) micBtn.classList.add('hidden');
+  bindVoiceHold(micBtn, {
+    onShortClick: () => {
+      // короткое нажатие = подсказка / старт записи сразу
+      if (!voiceAvailable()) {
+        banner('🎤 Голос: удерживайте 🎤 или ➤. Нужен faster-whisper на ПК.');
+        return;
+      }
+      voiceBegin();
+    },
+  });
+}
 // ------------------------------------------------------------ devices dialog
 
 $('#devBtn').addEventListener('click', () => {

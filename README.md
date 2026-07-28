@@ -3,13 +3,15 @@
 **Зеркалируй и управляй сессиями [Cursor CLI](https://cursor.com/docs/cli/overview) (`agent`) со смартфона.**
 Без облака-посредника: телефон ↔ ПК по LAN или p2p (iroh/QUIC).
 
+> **Основано на оригинале:** [HelpFreedom/claude-bridge](https://github.com/HelpFreedom/claude-bridge)
+> (Claude Code → телефон). Этот проект — адаптация под **Cursor CLI**, не замена upstream.
+> См. [NOTICE](NOTICE), [AUTHORS.md](AUTHORS.md).
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/ПК-Windows%20%7C%20Linux-informational)](#требования)
 [![Android](https://img.shields.io/badge/Телефон-Android%208%2B-green)](#2-android-приложение)
 
 🇷🇺 Русский · [🇬🇧 English](README.en.md)
-
-Форк / адаптация [HelpFreedom/claude-bridge](https://github.com/HelpFreedom/claude-bridge) под Cursor Agent CLI.
 
 ---
 

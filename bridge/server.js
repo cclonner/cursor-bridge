@@ -1028,14 +1028,28 @@ wss.on('connection', (ws, req) => {
 // ---------------------------------------------------------------- start
 
 function lanAddress() {
+  // Собираем кандидатов и скорим: реальный Wi‑Fi/Ethernet выше VPN/WSL/WARP.
+  const skipName = /docker|vethernet|hyper-v|wsl|cloudflare|warp|tailscale|outline|npcap|bluetooth|loopback|virbr|vbox|vmware|radmin|zerotier/i;
+  const scored = [];
   for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    if (skipName.test(name)) continue;
     for (const a of addrs || []) {
-      if (a.family === 'IPv4' && !a.internal && !name.startsWith('docker') &&
-          !name.startsWith('br-') && !name.startsWith('lxc') && !a.address.startsWith('169.254.')) {
-        return a.address;
-      }
+      const fam = a.family;
+      if (!(fam === 'IPv4' || fam === 4) || a.internal) continue;
+      const ip = a.address;
+      if (!ip || ip.startsWith('169.254.')) continue;
+      let score = 0;
+      if (ip.startsWith('192.168.')) score += 100;
+      else if (ip.startsWith('10.')) score += 40;
+      else if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) score += 20;
+      else continue; // не RFC1918
+      if (/wi-?fi|wlan|wireless|беспровод|wifi/i.test(name)) score += 30;
+      else if (/ethernet|ethernet|локальн|ethernet/i.test(name) && !/vethernet/i.test(name)) score += 20;
+      scored.push({ ip, score, name });
     }
   }
+  scored.sort((a, b) => b.score - a.score);
+  if (scored.length) return scored[0].ip;
   return '127.0.0.1';
 }
 

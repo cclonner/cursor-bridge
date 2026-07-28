@@ -80,9 +80,17 @@ body.has-session #placeholder { display: none; }
 #send {
   width: 52px; border-radius: 10px; border: none; background: #2563eb;
   color: #fff; font-size: 18px;
-  touch-action: none; /* дрожание пальца не должно превращаться в скролл и отменять запись */
+  touch-action: none;
   user-select: none; -webkit-user-select: none;
 }
+#micBtn {
+  width: 48px; border-radius: 10px; border: none; background: #334155;
+  color: #e2e8f0; font-size: 18px;
+  touch-action: none;
+  user-select: none; -webkit-user-select: none;
+}
+#micBtn.hidden { display: none; }
+#micBtn:active { background: #b91c1c; }
 
 .selh {
   position: absolute; z-index: 16;
