@@ -529,6 +529,74 @@ const TUNNEL_PORT = CONFIG.port + 2; // локальный порт для тр�
 // перечитывает файл на каждое соединение и пускает только известные узлы.
 const ALLOW_FILE = path.join(CERT_DIR, 'tunnel-allow.txt');
 
+/** PIDs, которые держат локальный порт (TCP LISTENING / UDP). Текущий процесс пропускаем. */
+function pidsOnPort(port) {
+  const mine = process.pid;
+  const pids = new Set();
+  if (process.platform === 'win32') {
+    const out = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
+    for (const line of (out.stdout || '').split(/\r?\n/)) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 4) continue;
+      const proto = (parts[0] || '').toUpperCase();
+      if (proto !== 'TCP' && proto !== 'UDP') continue;
+      const local = parts[1] || '';
+      if (!local.endsWith(':' + port)) continue;
+      if (proto === 'TCP') {
+        // TCP local foreign state pid
+        if (parts.length < 5 || parts[parts.length - 2] !== 'LISTENING') continue;
+        const pid = parseInt(parts[parts.length - 1], 10);
+        if (pid > 0 && pid !== mine) pids.add(pid);
+      } else {
+        // UDP local *:* pid
+        const pid = parseInt(parts[parts.length - 1], 10);
+        if (pid > 0 && pid !== mine) pids.add(pid);
+      }
+    }
+  } else {
+    const out = spawnSync('lsof', ['-t', `-i:${port}`, '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+    });
+    for (const tok of (out.stdout || '').trim().split(/\s+/)) {
+      const pid = parseInt(tok, 10);
+      if (pid > 0 && pid !== mine) pids.add(pid);
+    }
+    // UDP beacon
+    const udp = spawnSync('lsof', ['-t', `-iUDP:${port}`], { encoding: 'utf8' });
+    for (const tok of (udp.stdout || '').trim().split(/\s+/)) {
+      const pid = parseInt(tok, 10);
+      if (pid > 0 && pid !== mine) pids.add(pid);
+    }
+  }
+  return [...pids];
+}
+
+/** Перед bind: убить прошлый мост на тех же портах (иначе EADDRINUSE). */
+function freeBridgePorts() {
+  const ports = [CONFIG.port, CONFIG.port + 1, TUNNEL_PORT];
+  const killed = new Set();
+  for (const port of ports) {
+    for (const pid of pidsOnPort(port)) {
+      if (killed.has(pid)) continue;
+      try {
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
+        } else {
+          process.kill(pid, 'SIGTERM');
+        }
+        killed.add(pid);
+        console.log(`  Освободил порт: убит PID ${pid} (прошлый мост)`);
+      } catch (e) {
+        console.error(`  Не удалось убить PID ${pid}:`, e.message);
+      }
+    }
+  }
+  if (killed.size) {
+    // дать ОС отпустить сокеты
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); } catch {}
+  }
+}
+
 function writeAllowFile() {
   const ids = pairings.devices
     .map((d) => (d.nodeId || '').trim().toLowerCase())
@@ -1087,6 +1155,8 @@ beacon.on('message', (msg, rinfo) => {
 beacon.on('error', (e) => console.error('UDP beacon error (не критично):', e.message));
 
 async function main() {
+  freeBridgePorts();
+
   TLS = await ensureTls(CERT_DIR, 'cursor-bridge');
   FINGERPRINT = crypto.createHash('sha256').update(pemToDer(TLS.cert)).digest('hex');
 
