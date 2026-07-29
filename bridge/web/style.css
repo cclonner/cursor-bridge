@@ -167,6 +167,69 @@ dialog select, dialog input {
   width: 100%; margin: 8px 0; padding: 10px; border-radius: 8px;
   border: 1px solid #475569; background: #0b1120; color: #e2e8f0; font-size: 15px;
 }
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0 10px;
+}
+.pick {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 12px;
+  padding: 11px 12px;
+}
+.pick.active {
+  border-color: #3b82f6;
+  background: linear-gradient(180deg, #1d4ed8, #1e3a8a);
+}
+.pick .title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.pick .meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #94a3b8;
+  word-break: break-word;
+}
+.pick.active .meta { color: #dbeafe; }
+.pick .badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.pick .badge {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  background: #1e293b;
+  color: #cbd5e1;
+}
+.pick.active .badge {
+  background: rgba(255, 255, 255, .16);
+  color: #eff6ff;
+}
+.pick.session.alive {
+  border-left: 3px solid #22c55e;
+}
+.pick.session.dead {
+  border-left: 3px solid #64748b;
+  opacity: .78;
+}
+.hint, .empty {
+  font-size: 12px;
+  color: #94a3b8;
+  margin: 4px 0 10px;
+}
+.empty.hidden { display: none; }
 dialog .chk { display: block; font-size: 14px; color: #cbd5e1; margin: 10px 0; }
 dialog .chk input { width: auto; margin-right: 8px; }
 dialog .row { display: flex; gap: 8px; margin-top: 10px; }

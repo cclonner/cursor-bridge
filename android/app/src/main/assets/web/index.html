@@ -75,9 +75,16 @@
 
   <dialog id="newDialog">
     <h3>Новая сессия Cursor Agent</h3>
-    <label>Каталог проекта:</label>
-    <select id="projectSel"></select>
+    <label>Проект:</label>
+    <input id="projectSearch" type="text" placeholder="Поиск проекта">
+    <div id="projectList" class="picker"></div>
+    <div id="projectEmpty" class="empty hidden">Проекты не найдены.</div>
+    <label>Путь проекта:</label>
     <input id="projectCustom" type="text" placeholder="…или свой путь">
+    <div id="projectHint" class="hint"></div>
+    <label>Чаты / сессии в проекте:</label>
+    <div id="sessionList" class="picker sessions"></div>
+    <div id="sessionEmpty" class="empty">Для этого проекта пока нет сессий.</div>
     <label class="chk"><input type="checkbox" id="optResume"> --resume (выбрать прошлую сессию)</label>
     <label class="chk"><input type="checkbox" id="optForce"> --force (Run Everything)</label>
     <label class="chk"><input type="checkbox" id="optPlan"> --plan</label>

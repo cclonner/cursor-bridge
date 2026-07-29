@@ -19,6 +19,7 @@ let ws = null;
 let sessions = [];
 let projects = [];
 let current = localStorage.getItem('currentSession') || null;
+let selectedProject = '';
 let reconnectDelay = 500;
 let audioCtx = null;
 
@@ -529,6 +530,42 @@ function setStatus(t) { $('#status').textContent = t; }
 
 // ------------------------------------------------------------ sessions ui
 
+function normPath(p) {
+  return (p || '').replace(/[\\/]+$/, '').toLowerCase();
+}
+
+function shortProjectName(p) {
+  const parts = (p || '').split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || p || 'Проект';
+}
+
+function projectParent(p) {
+  const parts = (p || '').split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return p || '';
+  return parts.slice(0, -1).join('/');
+}
+
+function prettyTime(ts) {
+  if (!ts) return '';
+  try {
+    return new Date(ts).toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+function sessionsForProject(projectPath) {
+  const key = normPath(projectPath);
+  return sessions
+    .filter((s) => normPath(s.cwd) === key)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
 function attach(id, save) {
   current = id;
   if (save) localStorage.setItem('currentSession', id);
@@ -822,20 +859,90 @@ function renderDevices(m) {
 
 // ------------------------------------------------------------ new session dialog
 
-$('#newBtn').addEventListener('click', () => {
-  const sel = $('#projectSel');
-  sel.innerHTML = '';
-  for (const p of projects) {
-    const o = document.createElement('option');
-    o.value = p; o.textContent = p;
-    sel.appendChild(o);
+function renderProjectPicker() {
+  const list = $('#projectList');
+  const empty = $('#projectEmpty');
+  const query = ($('#projectSearch').value || '').trim().toLowerCase();
+  const projectItems = projects
+    .filter((p) => !query || p.toLowerCase().includes(query) || shortProjectName(p).toLowerCase().includes(query));
+
+  if (!selectedProject || !projects.some((p) => normPath(p) === normPath(selectedProject))) {
+    selectedProject = projectItems[0] || projects[0] || '';
   }
-  $('#projectCustom').value = '';
+  if (projectItems.length && !projectItems.some((p) => normPath(p) === normPath(selectedProject))) {
+    selectedProject = projectItems[0];
+  }
+
+  list.innerHTML = '';
+  empty.classList.toggle('hidden', projectItems.length > 0);
+  for (const projectPath of projectItems) {
+    const projectSessions = sessionsForProject(projectPath);
+    const b = document.createElement('button');
+    b.className = 'pick project' + (normPath(projectPath) === normPath(selectedProject) ? ' active' : '');
+    b.innerHTML =
+      `<div class="title">${shortProjectName(projectPath)}</div>` +
+      `<div class="meta">${projectPath}</div>` +
+      `<div class="badges">` +
+      `<span class="badge">${projectSessions.length} сесс.</span>` +
+      `${projectSessions.some((s) => s.alive) ? '<span class="badge">есть активные</span>' : ''}` +
+      `</div>`;
+    b.onclick = () => {
+      selectedProject = projectPath;
+      $('#projectCustom').value = projectPath;
+      renderProjectPicker();
+      renderProjectSessions();
+    };
+    list.appendChild(b);
+  }
+  if (!$('#projectCustom').value.trim() && selectedProject) $('#projectCustom').value = selectedProject;
+  renderProjectSessions();
+}
+
+function renderProjectSessions() {
+  const cwd = $('#projectCustom').value.trim() || selectedProject;
+  const list = $('#sessionList');
+  const empty = $('#sessionEmpty');
+  const hint = $('#projectHint');
+  const items = cwd ? sessionsForProject(cwd) : [];
+
+  hint.textContent = cwd ? cwd : 'Выберите проект или укажите путь вручную.';
+  list.innerHTML = '';
+  empty.classList.toggle('hidden', items.length > 0);
+
+  for (const s of items) {
+    const b = document.createElement('button');
+    b.className = 'pick session ' + (s.alive ? 'alive' : 'dead') + (s.id === current ? ' active' : '');
+    b.innerHTML =
+      `<div class="title">${s.title}</div>` +
+      `<div class="meta">${s.alive ? 'Активна' : 'Завершена'} · ${prettyTime(s.createdAt)} · ${s.id}</div>` +
+      `<div class="badges">` +
+      `${s.status === 'working' ? '<span class="badge">работает</span>' : ''}` +
+      `${s.status === 'waiting' ? '<span class="badge">ждёт</span>' : ''}` +
+      `${s.id === current ? '<span class="badge">открыта</span>' : ''}` +
+      `</div>`;
+    b.onclick = () => {
+      $('#newDialog').close();
+      attach(s.id, true);
+    };
+    list.appendChild(b);
+  }
+}
+
+$('#newBtn').addEventListener('click', () => {
+  selectedProject = selectedProject || projects[0] || '';
+  $('#projectSearch').value = '';
+  $('#projectCustom').value = selectedProject;
+  renderProjectPicker();
   $('#newDialog').showModal();
 });
 $('#createCancel').addEventListener('click', () => $('#newDialog').close());
+$('#projectSearch').addEventListener('input', renderProjectPicker);
+$('#projectCustom').addEventListener('input', () => {
+  selectedProject = $('#projectCustom').value.trim() || selectedProject;
+  renderProjectPicker();
+});
 $('#createOk').addEventListener('click', () => {
-  const cwd = $('#projectCustom').value.trim() || $('#projectSel').value;
+  const cwd = $('#projectCustom').value.trim() || selectedProject;
   const cargs = [];
   if ($('#optResume').checked) cargs.push('--resume');
   if ($('#optForce').checked) cargs.push('--force');
@@ -844,8 +951,7 @@ $('#createOk').addEventListener('click', () => {
   // agent не сможет продолжить тот же файл и молча создаст КОПИЮ беседы —
   // так в списке resume появляются дубликаты. Предлагаем вернуться в живую.
   if (cargs.includes('--resume')) {
-    const norm = (p) => (p || '').replace(/\/+$/, '');
-    const live = sessions.filter((s) => s.alive && norm(s.cwd) === norm(cwd));
+    const live = sessions.filter((s) => s.alive && normPath(s.cwd) === normPath(cwd));
     if (live.length && window.confirm(
         `В «${cwd}» уже есть живая сессия: ${live[0].title}.\n` +
         `Если беседа ещё открыта в ней, resume создаст копию беседы.\n\n` +

@@ -2,30 +2,31 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 import shutil
 
-out_dir = r'C:\Users\Splinter\source\cursor-bridge\assets\icons'
+repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+out_dir = os.path.join(repo_dir, 'assets', 'icons')
 os.makedirs(out_dir, exist_ok=True)
 
-ART_A = [
-    "                ",
-    "  +----+        ",
-    "  |    |  ##    ",
-    "  |       ##    ",
-    "  |    |        ",
-    "  +----+        ",
-    "                ",
-]
-ART_B = [
-    " ................ ",
-    " .              . ",
-    " .  #####       . ",
-    " . #            . ",
-    " . #       XX   . ",
-    " . #            . ",
-    " .  #####       . ",
-    " .              . ",
-    " ................ ",
-]
+# По умолчанию: используем уже лежащие PNG в assets/icons.
+# Перегенерация из ASCII-шаблонов включается только явно через env.
+RENDER_PROPOSALS = os.environ.get('RENDER_PROPOSALS') == '1'
 
+#
+# ASCII-предложение для иконки:
+# делаем именно логотип Cursor (cube), а не просто букву "C".
+#
+ART_A = [
+    "         XXXX",
+    "       XXXXXXXXX",
+    "    XX...........X",
+    "    X.###########X",
+    "    XXX..#######.X",
+    "    X.XXXX.####.XX",
+    "    X......###.XXX",
+    "    X......###...X",
+    "     XX....##..XX",
+    "        XX..XXX",
+    "          XX",
+]
 
 def render(art, path, bg=(15, 23, 42), fg=(34, 197, 94), accent=(34, 211, 238), size=1024):
     img = Image.new('RGBA', (size, size), bg + (255,))
@@ -66,27 +67,24 @@ def render(art, path, bg=(15, 23, 42), fg=(34, 197, 94), accent=(34, 211, 238), 
     print('wrote', path)
 
 
-render(ART_A, os.path.join(out_dir, 'icon-proposal-A-ascii-C.png'))
-render(ART_B, os.path.join(out_dir, 'icon-proposal-B-block-C.png'))
-
-src = r'C:\Users\Splinter\.cursor\projects\c-Users-Splinter-source-cursor-bridge\assets\cursor-bridge-icon-proposal.png'
-if os.path.exists(src):
-    shutil.copy(src, os.path.join(out_dir, 'icon-proposal-C-ai-terminal.png'))
-    print('copied AI proposal')
+if RENDER_PROPOSALS:
+    render(ART_A, os.path.join(out_dir, 'icon-proposal-A-ascii-C.png'))
 
 # Default apply A to launcher mipmaps
-base = Image.open(os.path.join(out_dir, 'icon-proposal-A-ascii-C.png')).convert('RGBA')
-mip = {
-    'mipmap-mdpi': 48,
-    'mipmap-hdpi': 72,
-    'mipmap-xhdpi': 96,
-    'mipmap-xxhdpi': 144,
-    'mipmap-xxxhdpi': 192,
-}
-res = r'C:\Users\Splinter\source\cursor-bridge\android\app\src\main\res'
-for folder, px in mip.items():
-    d = os.path.join(res, folder)
-    os.makedirs(d, exist_ok=True)
-    base.resize((px, px), Image.Resampling.LANCZOS).save(os.path.join(d, 'ic_launcher.png'))
-    print('mip', folder, px)
+if os.environ.get('SKIP_MIPMAPS') != '1':
+    base = Image.open(os.path.join(out_dir, 'icon-proposal-A-ascii-C.png')).convert('RGBA')
+    mip = {
+        'mipmap-mdpi': 48,
+        'mipmap-hdpi': 72,
+        'mipmap-xhdpi': 96,
+        'mipmap-xxhdpi': 144,
+        'mipmap-xxxhdpi': 192,
+    }
+    res = os.path.join(repo_dir, 'android', 'app', 'src', 'main', 'res')
+    for folder, px in mip.items():
+        d = os.path.join(res, folder)
+        os.makedirs(d, exist_ok=True)
+        base.resize((px, px), Image.Resampling.LANCZOS).save(os.path.join(d, 'ic_launcher.png'))
+        print('mip', folder, px)
+
 print('done')
