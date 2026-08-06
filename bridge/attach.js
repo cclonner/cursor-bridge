@@ -195,8 +195,10 @@ ws.on('message', (rawMsg) => {
       console.log(`Адрес моста: ${m.host}:${m.port}`);
       if (m.internet) console.log(`Доступ через интернет: ${fmtInet(m.internet)}`);
       console.log(`Код для ручного ввода: ${m.code}  (действует ${m.ttlMin || 10} минут)\n`);
-      qrcode.generate(JSON.stringify({ crb: 1, host: m.host, port: m.port, code: m.code, fp: m.fp }),
-        { small: true }, (q) => { console.log(q); process.exit(0); });
+      qrcode.generate(JSON.stringify({
+        crb: 1, host: m.host, port: m.port, code: m.code, fp: m.fp,
+        ticket: m.ticket || null, nodeId: m.nodeId || null, internet: !!m.internet,
+      }), { small: true }, (q) => { console.log(q); process.exit(0); });
       break;
     }
   }

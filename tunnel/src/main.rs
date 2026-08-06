@@ -33,6 +33,52 @@ const ALPN: &[u8] = b"cursor-bridge/1";
 const MAX_CONNS: usize = 32;
 const MAX_STREAMS_PER_CONN: usize = 64;
 
+/// IP годится для ticket/dial: RFC1918 «домашний» LAN, не VPN/WSL/CGNAT.
+fn is_usable_lan_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 192.168.0.0/16 — домашний Wi‑Fi/Ethernet
+            if o[0] == 192 && o[1] == 168 {
+                return true;
+            }
+            // 10.0.0.0/8 часто VPN (Outline/Radmin/CGNAT на телефоне) — НЕ берём
+            // 172.16–31 — WSL/Docker/WARP — НЕ берём
+            false
+        }
+        std::net::IpAddr::V6(_) => false, // Cloudflare/провайдерский v6 путает dial
+    }
+}
+
+/// Чистим EndpointAddr: relay всегда; IP только usable LAN (или none для relay-only).
+fn filter_endpoint_addr(addr: EndpointAddr, mode: &str) -> EndpointAddr {
+    let mode = mode.trim().to_ascii_lowercase();
+    let mut out = EndpointAddr::new(addr.id);
+    for a in addr.addrs.iter() {
+        match a {
+            TransportAddr::Relay(url) => {
+                out = out.with_relay_url(url.clone());
+            }
+            TransportAddr::Ip(sa) if mode == "all" => {
+                out = out.with_ip_addr(*sa);
+            }
+            TransportAddr::Ip(sa) if mode == "lan" || mode == "lan_relay" => {
+                if is_usable_lan_ip(sa.ip()) {
+                    out = out.with_ip_addr(*sa);
+                }
+            }
+            TransportAddr::Ip(_) => {} // relay mode: drop IPs
+            other => {
+                // Custom и пр. — только в all
+                if mode == "all" {
+                    out.addrs.insert(other.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 #[derive(Parser)]
 #[command(name = "cursor-tunnel", about = "TCP over iroh p2p tunnel")]
 struct Cli {
@@ -70,6 +116,21 @@ enum Cmd {
         /// Persistent ed25519 secret key file → stable node id for the allowlist.
         #[arg(long)]
         secret_file: Option<PathBuf>,
+        /// skip = не ждать online; bg = online фоном (default); wait = блокировать ready.
+        #[arg(long, default_value = "bg")]
+        online_mode: String,
+        /// Таймаут online() в секундах (bg/wait). 0 = сразу skip.
+        #[arg(long, default_value_t = 30)]
+        online_timeout_secs: u64,
+        /// Таймаут одного dial attempt.
+        #[arg(long, default_value_t = 20)]
+        dial_timeout_secs: u64,
+        /// Сразу прогреть connect после ready.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        warmup: bool,
+        /// all = как в ticket; lan = relay+RFC1918; relay = только relay (LTE).
+        #[arg(long, default_value = "lan")]
+        addr_mode: String,
     },
     /// Print this endpoint's node id (creating the key file if missing) and exit.
     Id {
@@ -102,7 +163,21 @@ fn main() -> Result<()> {
             ticket,
             listen,
             secret_file,
-        } => rt.block_on(run_connect(ticket, listen, secret_file)),
+            online_mode,
+            online_timeout_secs,
+            dial_timeout_secs,
+            warmup,
+            addr_mode,
+        } => rt.block_on(run_connect(
+            ticket,
+            listen,
+            secret_file,
+            online_mode,
+            online_timeout_secs,
+            dial_timeout_secs,
+            warmup,
+            addr_mode,
+        )),
         Cmd::Id { secret_file } => rt.block_on(run_id(secret_file)),
     }
 }
@@ -380,12 +455,15 @@ async fn run_listen(
 
     // Wait until relays/discovery consider us online so the ticket is complete.
     endpoint.online().await;
-    let addr = endpoint.addr();
-    let ticket = EndpointTicket::from(addr);
+    // Ticket без Radmin/WARP/WSL — иначе телефон на LTE минутами долбит мёртвые IP.
+    let raw = endpoint.addr();
+    let addr = filter_endpoint_addr(raw, "lan");
+    let ticket = EndpointTicket::from(addr.clone());
     emit(json!({
         "event": "ready",
         "ticket": ticket.to_string(),
         "node_id": endpoint.id().to_string(),
+        "addrs": addr.addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
     }));
     match &allow_file {
         Some(p) => eprintln!("listening via iroh (allowlist {}), forwarding to {target}", p.display()),
@@ -407,17 +485,17 @@ async fn run_listen(
         let allow_file = allow_file.clone();
         tokio::spawn(async move {
             let _permit = permit; // released when the connection task ends
-            // Тайм-аут рукопожатия: slow-loris-пир иначе держал бы слот соединения
-            // (permit) до исчерпания MAX_CONNS. 5с — с запасом на relay-путь, но
-            // вдвое меньше окна удержания слота неаутентифицированным пиром.
-            let conn = match tokio::time::timeout(Duration::from_secs(5), incoming).await {
+            // Тайм-аут рукопожатия: slow-loris иначе держал бы слот.
+            // 5с мало для LTE→relay→ПК (телефон видит "aborted by peer during handshake").
+            // 45с — запас на relay; allowlist всё равно до accept_bi.
+            let conn = match tokio::time::timeout(Duration::from_secs(45), incoming).await {
                 Ok(Ok(c)) => c,
                 Ok(Err(e)) => {
                     eprintln!("conn {id}: handshake failed: {e}");
                     return;
                 }
                 Err(_) => {
-                    eprintln!("conn {id}: handshake timed out");
+                    eprintln!("conn {id}: handshake timed out (45s)");
                     return;
                 }
             };
@@ -484,6 +562,7 @@ async fn run_listen(
 struct ConnectState {
     endpoint: Endpoint,
     remote: EndpointAddr,
+    dial_timeout: Duration,
     conn: tokio::sync::Mutex<Option<ConnSlot>>,
 }
 
@@ -507,7 +586,7 @@ async fn ensure_conn(state: &ConnectState) -> Connection {
     loop {
         eprintln!("dialing {} ...", state.remote.id);
         let attempt = tokio::time::timeout(
-            Duration::from_secs(20),
+            state.dial_timeout,
             state.endpoint.connect(state.remote.clone(), ALPN),
         )
         .await;
@@ -525,7 +604,13 @@ async fn ensure_conn(state: &ConnectState) -> Connection {
                 emit(json!({"event": "error", "message": format!("iroh connect failed: {e}")}));
             }
             Err(_) => {
-                emit(json!({"event": "error", "message": "iroh connect timed out after 20s"}));
+                emit(json!({
+                    "event": "error",
+                    "message": format!(
+                        "iroh connect timed out after {}s",
+                        state.dial_timeout.as_secs()
+                    )
+                }));
             }
         }
         tokio::time::sleep(delay).await;
@@ -548,15 +633,27 @@ async fn run_connect(
     ticket: String,
     listen: SocketAddr,
     secret_file: Option<PathBuf>,
+    online_mode: String,
+    online_timeout_secs: u64,
+    dial_timeout_secs: u64,
+    warmup: bool,
+    addr_mode: String,
 ) -> Result<()> {
     let ticket: EndpointTicket = ticket
         .trim()
         .parse()
         .map_err(|e| anyhow!("invalid ticket: {e}"))?;
-    let remote: EndpointAddr = ticket.into();
+    let remote_raw: EndpointAddr = ticket.into();
+    let remote = filter_endpoint_addr(remote_raw, &addr_mode);
+    if remote.addrs.is_empty() {
+        return Err(anyhow!(
+            "no usable addrs after addr_mode={addr_mode} (ticket без relay/LAN?)"
+        ));
+    }
+    let mode = online_mode.trim().to_ascii_lowercase();
+    let dial_timeout = Duration::from_secs(dial_timeout_secs.max(1));
+    let online_timeout = Duration::from_secs(online_timeout_secs);
 
-    // A persistent secret gives this phone a stable node id so the PC can
-    // allowlist it; without one the id is random each launch.
     let builder = Endpoint::builder(presets::N0).alpns(vec![ALPN.to_vec()]);
     let builder = match &secret_file {
         Some(path) => builder.secret_key(load_or_create_secret(path)?),
@@ -567,18 +664,79 @@ async fn run_connect(
         .await
         .map_err(|e| anyhow!("failed to bind iroh endpoint: {e}"))?;
 
+    emit(json!({
+        "event": "cfg",
+        "online_mode": mode,
+        "online_timeout_secs": online_timeout_secs,
+        "dial_timeout_secs": dial_timeout_secs,
+        "warmup": warmup,
+        "addr_mode": addr_mode.trim().to_ascii_lowercase(),
+        "dial_addrs": remote.addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+    }));
+
+    let mut online_at_ready = false;
+    let addr_mode_l = addr_mode.trim().to_ascii_lowercase();
+    // LTE/relay-only: dial ДО home-relay на телефоне часто таймаутится.
+    // На ПК relay-only ок за ~2с; на LTE нужно сначала online().
+    let wait_online_first = addr_mode_l == "relay" || mode == "wait";
+
+    if wait_online_first && online_timeout_secs > 0 {
+        match tokio::time::timeout(online_timeout, endpoint.online()).await {
+            Ok(()) => {
+                online_at_ready = true;
+                emit(json!({"event": "status", "online": true}));
+            }
+            Err(_) => emit(json!({
+                "event": "warn",
+                "soft": true,
+                "message": format!(
+                    "online() timeout {online_timeout_secs}s перед dial (addr_mode={addr_mode_l})"
+                )
+            })),
+        }
+    } else if mode == "bg" && online_timeout_secs > 0 {
+        let ep = endpoint.clone();
+        let secs = online_timeout_secs;
+        tokio::spawn(async move {
+            match tokio::time::timeout(Duration::from_secs(secs), ep.online()).await {
+                Ok(()) => emit(json!({"event": "status", "online": true})),
+                Err(_) => emit(json!({
+                    "event": "warn",
+                    "soft": true,
+                    "message": format!(
+                        "phone home-relay ещё нет (online {secs}с) — dial по ticket всё равно"
+                    )
+                })),
+            }
+        });
+    }
+
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("binding tcp listener on {listen}"))?;
     let port = listener.local_addr()?.port();
-    emit(json!({"event": "ready", "port": port}));
-    eprintln!("tcp listening on port {port}, tunneling to {}", remote.id);
+    emit(json!({"event": "ready", "port": port, "online": online_at_ready}));
+    eprintln!(
+        "tcp listening on port {port}, tunneling to {} (mode={mode}, addr={addr_mode_l}, dial={}s)",
+        remote.id,
+        dial_timeout.as_secs()
+    );
 
     let state = Arc::new(ConnectState {
         endpoint,
         remote,
+        dial_timeout,
         conn: tokio::sync::Mutex::new(None),
     });
+
+    if warmup {
+        let state = state.clone();
+        tokio::spawn(async move {
+            emit(json!({"event": "dialing", "remote": state.remote.id.to_string()}));
+            let _ = ensure_conn(&state).await;
+            emit(json!({"event": "connected", "remote": state.remote.id.to_string()}));
+        });
+    }
 
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -592,8 +750,6 @@ async fn run_connect(
         eprintln!("tcp client connected from {peer}");
         let state = state.clone();
         tokio::spawn(async move {
-            // Try a few times: the shared connection may have silently died,
-            // in which case the first open_bi fails and we redial.
             for _attempt in 0..5 {
                 let conn = ensure_conn(&state).await;
                 match conn.open_bi().await {

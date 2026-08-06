@@ -338,7 +338,8 @@ public class MainActivity extends Activity {
                         JSONObject j = new JSONObject(barcode.getRawValue());
                         if (j.optInt("crb") != 1) throw new Exception("не тот QR");
                         pair(j.getString("host"), j.optInt("port", 8790),
-                                j.getString("code"), j.optString("fp", null));
+                                j.getString("code"), j.optString("fp", null),
+                                j.optString("ticket", null));
                     } catch (Exception e) {
                         setPairStatus("Это не QR-код Cursor Bridge");
                     }
@@ -348,50 +349,148 @@ public class MainActivity extends Activity {
 
     /** Обмен кода сопряжения на постоянный токен + пиннинг сертификата. */
     private void pair(String host, int port, String code, String expectedFp) {
+        pair(host, port, code, expectedFp, null);
+    }
+
+    private void pair(String host, int port, String code, String expectedFp, String ticket) {
         setPairStatus("Сопряжение…");
         new Thread(() -> {
+            Exception lanErr = null;
             try {
-                // QR: отпечаток уже проверен вне канала → пиннится expectedFp.
-                // Ручной код: TOFU, но пиннится ФАКТИЧЕСКИЙ серт рукопожатия
-                // (seen), а не значение из тела ответа — иначе MITM подтвердит
-                // собственный серт. Затем — сверка отпечатка пользователем.
-                java.util.concurrent.atomic.AtomicReference<String> seen = new java.util.concurrent.atomic.AtomicReference<>();
-                OkHttpClient client = expectedFp != null
-                        ? Tls.buildClient(expectedFp)
-                        : Tls.capturingClient(seen);
-                JSONObject body = new JSONObject()
-                        .put("code", code)
-                        .put("name", Build.MANUFACTURER + " " + Build.MODEL);
-                Request req = new Request.Builder()
-                        .url("https://" + host + ":" + port + "/pair")
-                        .post(RequestBody.create(body.toString(), MediaType.get("application/json")))
-                        .build();
-                try (Response resp = client.newCall(req).execute()) {
-                    if (resp.code() == 403) { setPairStatus("Неверный код. Проверьте код в терминале ПК."); return; }
-                    if (!resp.isSuccessful()) { setPairStatus("Ошибка моста: HTTP " + resp.code()); return; }
-                    JSONObject j = new JSONObject(resp.body().string());
-                    String realFp = expectedFp != null ? expectedFp : seen.get();
-                    if (realFp == null || realFp.isEmpty()) {
-                        setPairStatus("Не удалось получить сертификат моста"); return;
-                    }
-                    BridgeStore.Bridge b = new BridgeStore.Bridge();
-                    b.token = j.getString("token");
-                    b.fp = realFp;
-                    b.host = host;
-                    b.port = j.optInt("port", port);
-                    b.name = j.optString("hostname", host);
-                    String tk = j.optString("nodeTicket", "");
-                    if (!tk.isEmpty()) b.nodeTicket = tk; // p2p-адрес, если ПК его дал
-                    if (expectedFp != null) {
-                        commitPairing(b); // QR — отпечаток уже доверен
-                    } else {
-                        runOnUiThread(() -> confirmFingerprint(b)); // ручной — сверить с ПК
-                    }
-                }
+                doPairHttp(host, port, code, expectedFp, host);
+                return;
             } catch (Exception e) {
-                setPairStatus("Не удалось: " + e.getMessage());
+                lanErr = e;
             }
+            // LTE / другая сеть: LAN 192.168.x недоступен — pair через iroh ticket из QR
+            if (ticket != null && !ticket.isEmpty() && expectedFp != null) {
+                try {
+                    setPairStatus("LAN недоступен — поднимаю iroh (LTE)…");
+                    pairOverIroh(ticket, code, expectedFp, host, port);
+                    return;
+                } catch (Exception e) {
+                    setPairStatus("LTE/iroh: " + e.getMessage()
+                            + (lanErr != null ? "\n(LAN: " + lanErr.getMessage() + ")" : ""));
+                    return;
+                }
+            }
+            setPairStatus("Не удалось: " + (lanErr != null ? lanErr.getMessage() : "нет ticket в QR")
+                    + "\nНа LTE отсканируйте свежий QR с ПК (нужен iroh).");
         }, "pair").start();
+    }
+
+    private void doPairHttp(String host, int port, String code, String expectedFp, String storeHost)
+            throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> seen =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        OkHttpClient client = expectedFp != null
+                ? Tls.buildClient(expectedFp).newBuilder()
+                    .connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(15, TimeUnit.SECONDS)
+                    .build()
+                : Tls.capturingClient(seen).newBuilder()
+                    .connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(15, TimeUnit.SECONDS)
+                    .build();
+        JSONObject body = new JSONObject()
+                .put("code", code)
+                .put("name", Build.MANUFACTURER + " " + Build.MODEL);
+        Request req = new Request.Builder()
+                .url("https://" + host + ":" + port + "/pair")
+                .post(RequestBody.create(body.toString(), MediaType.get("application/json")))
+                .build();
+        try (Response resp = client.newCall(req).execute()) {
+            if (resp.code() == 403) throw new Exception("Неверный код. Проверьте код в терминале ПК.");
+            if (!resp.isSuccessful()) throw new Exception("Ошибка моста: HTTP " + resp.code());
+            JSONObject j = new JSONObject(resp.body().string());
+            String realFp = expectedFp != null ? expectedFp : seen.get();
+            if (realFp == null || realFp.isEmpty()) {
+                throw new Exception("Не удалось получить сертификат моста");
+            }
+            BridgeStore.Bridge b = new BridgeStore.Bridge();
+            b.token = j.getString("token");
+            b.fp = realFp;
+            b.host = storeHost != null ? storeHost : host;
+            b.port = j.optInt("port", port);
+            b.name = j.optString("hostname", b.host);
+            String tk = j.optString("nodeTicket", "");
+            if (!tk.isEmpty()) b.nodeTicket = tk;
+            b.internet = j.optBoolean("internet", false) || (b.nodeTicket != null);
+            b.endpoints = BridgeStore.parseEndpoints(j.optJSONArray("endpoints"));
+            if (expectedFp != null) {
+                commitPairing(b);
+            } else {
+                runOnUiThread(() -> confirmFingerprint(b));
+            }
+        }
+    }
+
+    /** Pair через iroh: ticket из QR → local tunnel → POST /pair на 127.0.0.1. */
+    private void pairOverIroh(String ticket, String code, String expectedFp,
+                              String lanHost, int lanPort) throws Exception {
+        java.io.File bin = new java.io.File(getApplicationInfo().nativeLibraryDir, "libcursortunnel.so");
+        if (!bin.exists()) throw new Exception("в APK нет libcursortunnel.so");
+        java.io.File key = new java.io.File(getFilesDir(), "phone-iroh.key");
+        Process proc = new ProcessBuilder(
+                bin.getAbsolutePath(),
+                "connect",
+                "--ticket=" + ticket,
+                "--listen", "127.0.0.1:0",
+                "--secret-file", key.getAbsolutePath(),
+                "--online-mode", "bg",
+                "--online-timeout-secs", "45",
+                "--dial-timeout-secs", "60",
+                "--warmup", "true",
+                "--addr-mode", "relay")
+                .redirectErrorStream(true)
+                .start();
+        final java.util.concurrent.BlockingQueue<String> lines =
+                new java.util.concurrent.LinkedBlockingQueue<>();
+        Thread reader = new Thread(() -> {
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(proc.getInputStream()))) {
+                String line;
+                while ((line = r.readLine()) != null) lines.offer(line);
+            } catch (Exception ignored) {}
+        }, "pair-iroh-io");
+        reader.setDaemon(true);
+        reader.start();
+
+        int tunPort = 0;
+        boolean irohOk = false;
+        String lastErr = null;
+        long deadline = System.currentTimeMillis() + 90_000;
+        try {
+            while (System.currentTimeMillis() < deadline) {
+                String line = lines.poll(300, TimeUnit.MILLISECONDS);
+                if (line == null) {
+                    if (!proc.isAlive() && tunPort == 0) break;
+                    continue;
+                }
+                try {
+                    JSONObject j = new JSONObject(line);
+                    String ev = j.optString("event");
+                    if ("ready".equals(ev)) tunPort = j.optInt("port", 0);
+                    else if ("connected".equals(ev)) {
+                        irohOk = true;
+                        break;
+                    } else if ("error".equals(ev)) {
+                        lastErr = j.optString("message", "iroh error");
+                    } else if ("status".equals(ev) && j.optBoolean("online")) {
+                        setPairStatus("iroh relay online — звоню на ПК…");
+                    } else if ("dialing".equals(ev)) {
+                        setPairStatus("iroh: dial на ПК…");
+                    }
+                } catch (Exception ignored) {}
+            }
+            if (!irohOk || tunPort <= 0) {
+                throw new Exception(lastErr != null ? lastErr : "iroh dial timeout (relay)");
+            }
+            setPairStatus("iroh OK — сопряжение через туннель…");
+            doPairHttp("127.0.0.1", tunPort, code, expectedFp, lanHost);
+        } finally {
+            try { proc.destroy(); } catch (Exception ignored) {}
+        }
     }
 
     /** Ручное сопряжение: пользователь сверяет отпечаток с показанным в терминале ПК. */
@@ -661,7 +760,16 @@ public class MainActivity extends Activity {
             if (b.internet && b.nodeTicket == null) {
                 box.addView(themedText("Нет p2p-адреса этого ПК: подключитесь к нему по WiFi,\n" +
                         "включив на нём интернет-доступ (cursor-mobile --device → i).", "#f59e0b", 12));
+            } else if (b.internet && b.nodeTicket != null) {
+                box.addView(themedText("p2p-адрес есть — вне WiFi пойдёт через iroh.", C_GREEN, 12));
             }
+            Button repair = themedBtn("Обновить привязку (QR/код)", C_GRAY);
+            repair.setOnClickListener(v -> {
+                store.setActive(b.fp); // этот ПК станет активным после повторного pair
+                pcDialog.dismiss();
+                showAddPc();
+            });
+            box.addView(repair);
         }
 
         if (list.isEmpty()) {
@@ -671,6 +779,20 @@ public class MainActivity extends Activity {
         Button add = themedBtn("＋ Добавить компьютер", C_GREEN);
         add.setOnClickListener(v -> { pcDialog.dismiss(); showAddPc(); });
         box.addView(add);
+
+        Button diag = themedBtn("Отправить диагностику на ПК", C_BLUE);
+        diag.setOnClickListener(v -> {
+            startForegroundService(new Intent(this, BridgeService.class)
+                    .setAction(BridgeService.ACTION_SEND_DIAG)
+                    .putExtra("reason", "manual_button"));
+            android.widget.Toast.makeText(this,
+                    "Шлю диагностику на мост… смотри уведомление",
+                    android.widget.Toast.LENGTH_SHORT).show();
+        });
+        box.addView(diag);
+        box.addView(themedText(
+                "Лог на ПК: bridge/logs/phone-diag.jsonl\nи phone-diag-latest.json",
+                C_MUTED, 12));
 
         // ------------------------------------------ фоновая связь (батарея)
         TextView bh = themedText("Фоновая связь", C_TEXT, 16);

@@ -104,7 +104,7 @@ public final class Tls {
             return new OkHttpClient.Builder()
                     .sslSocketFactory(ctx.getSocketFactory(), tm)
                     .hostnameVerifier((h, s) -> true) // доверие определяет пиннинг, не имя хоста
-                    .pingInterval(20, TimeUnit.SECONDS)
+                    .pingInterval(5, TimeUnit.SECONDS)
                     .connectTimeout(5, TimeUnit.SECONDS)
                     .build();
         } catch (Exception e) {

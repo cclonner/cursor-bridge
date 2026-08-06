@@ -107,6 +107,25 @@ function deviceIdOf(token) {
 }
 for (const d of pairings.devices) if (!d.id) d.id = deviceIdOf(d.token);
 
+/** Один телефон часто переспаривают → 5× «Nothing A063». Оставляем самый новый на nodeId/имя. */
+function pruneDuplicateDevices() {
+  const best = new Map();
+  for (const d of pairings.devices) {
+    const key = d.nodeId ? `node:${d.nodeId}` : `name:${(d.name || '').toLowerCase()}`;
+    const prev = best.get(key);
+    if (!prev || String(d.addedAt || '') >= String(prev.addedAt || '')) best.set(key, d);
+  }
+  const keepIds = new Set([...best.values()].map((d) => d.id));
+  const before = pairings.devices.length;
+  if (keepIds.size >= before) return 0;
+  pairings.devices = pairings.devices.filter((d) => keepIds.has(d.id));
+  savePairings();
+  writeAllowFile();
+  console.log(`  Дубликаты сопряжений: ${before} → ${pairings.devices.length}`);
+  return before - pairings.devices.length;
+}
+pruneDuplicateDevices();
+
 function savePairings() {
   // 0600: токены устройств не должны быть доступны другим пользователям машины
   fs.writeFileSync(PAIR_FILE, JSON.stringify(pairings, null, 2), { mode: 0o600 });
@@ -619,6 +638,7 @@ function internetMsg() {
     available: fs.existsSync(TUNNEL_BIN),
     ticket: tunnelInfo.ticket,
     nodeId: tunnelInfo.nodeId,
+    endpoints: bridgeEndpoints(),
     peers: [...tunnelPeers.values()],
   };
 }
@@ -703,10 +723,11 @@ function httpHandler(req, res) {
 
   // Сопряжение нового устройства: одноразовый код -> постоянный токен
   if (req.method === 'POST' && url.pathname === '/pair') {
-    // только по основному порту (LAN/локально): туннель поднимается уже ПОСЛЕ
-    // сопряжения, а пускать интернет-пиров к /pair (и давать им забивать
-    // блокировку перебора для всех) незачем
-    if (req.socket.localPort !== CONFIG.port) { res.writeHead(404); res.end(); return; }
+    // LAN или туннель (LTE-first): код всё ещё секрет; без кода /pair мёртв.
+    const localPort = req.socket.localPort;
+    if (localPort !== CONFIG.port && localPort !== TUNNEL_PORT) {
+      res.writeHead(404); res.end(); return;
+    }
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
     req.on('end', () => {
@@ -773,7 +794,61 @@ function httpHandler(req, res) {
       res.end(JSON.stringify({
         token, fingerprint: FINGERPRINT, port: CONFIG.port, hostname: os.hostname(),
         nodeTicket: tunnelInfo.ticket, internet: inet.enabled,
+        endpoints: bridgeEndpoints(),
       }));
+    });
+    return;
+  }
+
+  // Диагностика с телефона → файл на ПК (читает оператор / агент)
+  if (req.method === 'POST' && url.pathname === '/diag') {
+    if (!authed(req, url)) { res.writeHead(401); res.end(); return; }
+    const chunks = [];
+    let size = 0;
+    let overflow = false;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > 512e3 && !overflow) {
+        overflow = true;
+        try { res.writeHead(413); res.end(); } catch {}
+        req.destroy();
+        return;
+      }
+      if (!overflow) chunks.push(c);
+    });
+    req.on('error', () => {});
+    req.on('end', () => {
+      if (overflow) return;
+      const raw = Buffer.concat(chunks).toString('utf8');
+      let payload = {};
+      try { payload = JSON.parse(raw || '{}'); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end('{"error":"bad json"}');
+        return;
+      }
+      const diagDir = path.join(__dirname, 'logs');
+      try { fs.mkdirSync(diagDir, { recursive: true, mode: 0o700 }); } catch {}
+      const line = JSON.stringify({
+        at: new Date().toISOString(),
+        from: req.socket.remoteAddress || null,
+        device: (payload.deviceName || payload.device || '').toString().slice(0, 80),
+        reason: (payload.reason || 'manual').toString().slice(0, 120),
+        payload,
+      }) + '\n';
+      const file = path.join(diagDir, 'phone-diag.jsonl');
+      try {
+        fs.appendFileSync(file, line, { mode: 0o600 });
+        // укороченный хвост для быстрого взгляда
+        fs.writeFileSync(path.join(diagDir, 'phone-diag-latest.json'), JSON.stringify(payload, null, 2), { mode: 0o600 });
+      } catch (e) {
+        console.error('[diag] write failed:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'write failed' }));
+        return;
+      }
+      console.log(`\n  [diag] от телефона: ${payload.reason || 'manual'} → bridge/logs/phone-diag.jsonl`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
     });
     return;
   }
@@ -881,6 +956,28 @@ function httpHandler(req, res) {
     return;
   }
 
+  // Локальный запуск тактики на телефоне (LAN): POST /phone-cmd {"cmd":"snapshot"}
+  if (req.method === 'POST' && url.pathname === '/phone-cmd') {
+    if (!isLocal(req)) { res.writeHead(403); res.end('local only'); return; }
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 32e3) req.destroy(); });
+    req.on('end', () => {
+      let p = {};
+      try { p = JSON.parse(body || '{}'); } catch {}
+      const cmd = String(p.cmd || '').slice(0, 64);
+      if (!cmd) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end('{"error":"cmd required"}');
+        return;
+      }
+      const id = p.cmdId || crypto.randomBytes(4).toString('hex');
+      const sent = dispatchPhoneCmd(cmd, id, p.args || {}, null);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, cmdId: id, ...sent }));
+    });
+    return;
+  }
+
   // static: vendor libs from node_modules, everything else from web/
   if (!authed(req, url)) {
     res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -931,6 +1028,53 @@ function handleUpgrade(req, sock, head) {
   wss.handleUpgrade(req, sock, head, (ws) => wss.emit('connection', ws, req));
 }
 const allClients = new Set();
+/** deviceId → { name, onlineAt, offlineTimer } — дедуп логов при 2–3 WS и thrash */
+const phonePresence = new Map();
+
+function phoneSocketsLive(deviceId) {
+  for (const c of allClients) {
+    if (c.deviceId === deviceId && c.readyState === 1) return true;
+  }
+  return false;
+}
+
+function logPhoneOnline(ws, via) {
+  if (!ws.deviceId || ws.deviceId === 'local') return;
+  const prev = phonePresence.get(ws.deviceId);
+  if (prev && prev.offlineTimer) {
+    clearTimeout(prev.offlineTimer);
+    prev.offlineTimer = null;
+  }
+  const wasOnline = prev && prev.online;
+  phonePresence.set(ws.deviceId, {
+    name: ws.deviceName || ws.deviceId.slice(0, 8),
+    online: true,
+    offlineTimer: null,
+  });
+  if (!wasOnline) {
+    console.log(`\n  Телефон онлайн: ${ws.deviceName} (${ws.deviceId.slice(0, 8)}…) via ${via}`);
+  }
+}
+
+function logPhoneOffline(ws) {
+  if (!ws.deviceId || ws.deviceId === 'local') return;
+  const id = ws.deviceId;
+  const name = ws.deviceName || id.slice(0, 8);
+  const prev = phonePresence.get(id) || { name, online: true, offlineTimer: null };
+  if (prev.offlineTimer) return; // уже ждём
+  prev.online = false;
+  prev.offlineTimer = setTimeout(() => {
+    prev.offlineTimer = null;
+    if (phoneSocketsLive(id)) {
+      prev.online = true;
+      phonePresence.set(id, prev);
+      return;
+    }
+    phonePresence.delete(id);
+    console.log(`\n  Телефон офлайн: ${name} (${id.slice(0, 8)}…)`);
+  }, 2000);
+  phonePresence.set(id, prev);
+}
 
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
@@ -955,9 +1099,18 @@ wss.on('connection', (ws, req) => {
   }
   const dev = deviceByToken(requestToken(req, connUrl));
   ws.deviceId = dev ? dev.id : (isLocal(req) ? 'local' : null);
+  ws.deviceName = dev ? (dev.name || 'телефон') : (ws.deviceId === 'local' ? 'local' : null);
+  ws.isAlive = true;
+  ws.missedPongs = 0;
   allClients.add(ws);
   ws.attached = null;
+  if (ws.deviceId && ws.deviceId !== 'local') {
+    const via = req.socket.localPort === TUNNEL_PORT ? 'туннель' : 'LAN';
+    logPhoneOnline(ws, via);
+  }
   ws.send(JSON.stringify({ type: 'sessions', sessions: sessionList(), projects: CONFIG.projects || [] }));
+
+  ws.on('pong', () => { ws.isAlive = true; ws.missedPongs = 0; });
 
   ws.on('message', (raw) => {
     let m;
@@ -1046,6 +1199,7 @@ wss.on('connection', (ws, req) => {
             dev.nodeId = nid;
             savePairings();
             writeAllowFile();
+            pruneDuplicateDevices();
             console.log(`  Зарегистрирован p2p-узел устройства «${dev.name}»`);
           }
         }
@@ -1058,6 +1212,35 @@ wss.on('connection', (ws, req) => {
           broadcastInternet();
         }
         break;
+      case 'phoneCmd': {
+        // удалённые тесты/тактики на телефоне — только с ПК
+        if (ws.deviceId !== 'local') break;
+        const cmd = String(m.cmd || '').slice(0, 64);
+        if (!cmd) break;
+        const id = m.cmdId || crypto.randomBytes(4).toString('hex');
+        dispatchPhoneCmd(cmd, id, m.args || {}, ws);
+        break;
+      }
+      case 'phoneCmdResult': {
+        // ответ телефона — пишем в лог и пересылаем локальным клиентам
+        if (!ws.deviceId || ws.deviceId === 'local') break;
+        const entry = {
+          at: new Date().toISOString(),
+          deviceId: ws.deviceId,
+          cmdId: m.cmdId || null,
+          cmd: m.cmd || null,
+          ok: !!m.ok,
+          result: m.result || m,
+        };
+        appendPhoneCmdLog(entry);
+        console.log(`\n  [phoneCmd] result from ${ws.deviceId}: ${entry.cmd} ok=${entry.ok}`);
+        for (const c of allClients) {
+          if (c.deviceId === 'local' && c.readyState === 1) {
+            c.send(JSON.stringify({ type: 'phoneCmdResult', ...entry }));
+          }
+        }
+        break;
+      }
       case 'pairinfo':
         // данные сопряжения — только локальным клиентам (cursor-mobile --qr);
         // каждый запрос выдаёт свежий код на 10 минут
@@ -1070,7 +1253,10 @@ wss.on('connection', (ws, req) => {
             code: p.code,
             ttlMin: Math.round(PAIR_TTL_MS / 60000),
             fp: FINGERPRINT,
-            internet: internetMsg(),
+            ticket: tunnelInfo.ticket || null,
+            nodeId: tunnelInfo.nodeId || null,
+            internet: inet.enabled,
+            endpoints: bridgeEndpoints(),
           }));
         }
         break;
@@ -1090,8 +1276,30 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     allClients.delete(ws);
     if (ws.attached) { const s = sessions.get(ws.attached); if (s) s.clients.delete(ws); }
+    logPhoneOffline(ws);
   });
 });
+
+// WS keepalive: мёртвый half-open (WiFi off / LTE drop) иначе висит минуты без close.
+// Ping каждые 5с; 2 пропущенных pong → terminate. Офлайн в лог — с debounce 2с.
+const WS_PING_MS = 5000;
+const wsHeartbeat = setInterval(() => {
+  for (const ws of allClients) {
+    if (ws.readyState !== 1) continue;
+    if (ws.isAlive === false) {
+      ws.missedPongs = (ws.missedPongs || 0) + 1;
+      if (ws.missedPongs >= 2) {
+        try { ws.terminate(); } catch { }
+        continue;
+      }
+    } else {
+      ws.missedPongs = 0;
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch { try { ws.terminate(); } catch { } }
+  }
+}, WS_PING_MS);
+wsHeartbeat.unref?.();
 
 // ---------------------------------------------------------------- start
 
@@ -1119,6 +1327,58 @@ function lanAddress() {
   scored.sort((a, b) => b.score - a.score);
   if (scored.length) return scored[0].ip;
   return '127.0.0.1';
+}
+
+// WSS-эндпоинты моста для телефона, в порядке приоритета:
+//   lan — RFC1918 (Wi‑Fi/локальная сеть),
+//   v6  — глобальный IPv6 (LTE/интернет без релея, если провайдеры дают v6),
+//   ov  — overlay-интерфейсы (Tailscale/Radmin VPN/ZeroTier и пр.) + ручные из config.
+// Публикуются в QR, /pair, pairinfo и internetMsg; телефон пробует
+// LAN → v6 → overlay → iroh-туннель.
+const OVERLAY_IFACE = /tailscale|radmin|zerotier|tun[0-9]|wg[0-9]|wireguard|amnezia|outline/i;
+// Виртуальные интерфейсы, которые не дают телефонам полезных адресов:
+// WSL/Hyper‑V/Docker/WARP/Bluetooth/Teredo и т.п.
+const SKIP_IFACE = /docker|vethernet|hyper-v|wsl|cloudflare|warp|npcap|bluetooth|loopback|virbr|vbox|vmware|teredo|isatap/i;
+function bridgeEndpoints() {
+  const out = [];
+  const seen = new Set();
+  const push = (k, ip) => {
+    if (!ip || seen.has(ip)) return;
+    seen.add(ip);
+    out.push({ k, u: ip + ':' + CONFIG.port });
+  };
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.internal) continue;
+      const fam = a.family;
+      const ip = a.address;
+      const overlay = OVERLAY_IFACE.test(name);
+      if (fam === 'IPv4' || fam === 4) {
+        if (ip.startsWith('169.254.')) continue; // APIPA
+        if (overlay) { push('ov', ip); continue; }
+        if (SKIP_IFACE.test(name)) continue;
+        if (ip.startsWith('192.168.') || ip.startsWith('10.')
+            || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) {
+          push('lan', ip);
+        }
+      } else if (fam === 'IPv6' || fam === 6) {
+        const l = ip.toLowerCase();
+        if (l.startsWith('fe80')) continue;            // link-local бесполезен удалённо
+        if (l.startsWith('fc') || l.startsWith('fd')) continue; // ULA — только внутри VPN
+        if (l.startsWith('2001:') || l.startsWith('2002:')) continue; // Teredo / 6to4
+        if (l.startsWith('64:ff9b:')) continue;        // NAT64 — только к IPv4-целям
+        if (overlay) { push('ov', ip); continue; }
+        if (SKIP_IFACE.test(name)) continue;
+        const first = parseInt(l.split(':')[0] || '0', 16);
+        if (first >= 0x2000 && first <= 0x3fff) push('v6', ip); // 2000::/3 = глобальный
+      }
+    }
+  }
+  for (const e of CONFIG.extraEndpoints || []) {
+    if (typeof e === 'string') out.push({ k: 'ov', u: e });
+    else out.push({ k: e.k || 'ov', u: e.u });
+  }
+  return out;
 }
 
 // UDP-обнаружение: телефон шлёт broadcast "CURSOR_BRIDGE?" на 8791,
@@ -1154,6 +1414,65 @@ beacon.on('message', (msg, rinfo) => {
 });
 beacon.on('error', (e) => console.error('UDP beacon error (не критично):', e.message));
 
+// --- удалённые команды на телефон (WS + UDP LAN) ---
+const PHONE_CMD_UDP_PORT = (CONFIG.port || 8790) + 3; // 8793
+const DIAG_LOG_DIR = path.join(__dirname, 'logs');
+
+function tokenHash16(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 16);
+}
+
+function appendPhoneCmdLog(entry) {
+  try {
+    fs.mkdirSync(DIAG_LOG_DIR, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(path.join(DIAG_LOG_DIR, 'phone-cmd.jsonl'), JSON.stringify(entry) + '\n', { mode: 0o600 });
+    fs.writeFileSync(path.join(DIAG_LOG_DIR, 'phone-cmd-latest.json'), JSON.stringify(entry, null, 2), { mode: 0o600 });
+  } catch (e) {
+    console.error('[phoneCmd] log write:', e.message);
+  }
+}
+
+/** Разослать команду телефонам: WS (если online) + UDP broadcast (даже без WSS). */
+function dispatchPhoneCmd(cmd, cmdId, args, replyWs) {
+  const hashes = pairings.devices.map((d) => tokenHash16(d.token)).filter(Boolean);
+  const payload = {
+    type: 'phoneCmd',
+    cmd,
+    cmdId,
+    args: args || {},
+    tokenHashes: hashes,
+    at: Date.now(),
+  };
+  const msg = JSON.stringify(payload);
+  let wsTargets = 0;
+  for (const c of allClients) {
+    if (c.readyState === 1 && c.deviceId && c.deviceId !== 'local') {
+      c.send(msg);
+      wsTargets++;
+    }
+  }
+  // UDP: телефон слушает 8793; auth по tokenHashes
+  const udpBody = Buffer.from('CURSOR_BRIDGE_CMD' + msg, 'utf8');
+  try {
+    const sock = dgram.createSocket('udp4');
+    sock.bind(() => {
+      try { sock.setBroadcast(true); } catch {}
+      sock.send(udpBody, 0, udpBody.length, PHONE_CMD_UDP_PORT, '255.255.255.255', () => {
+        try { sock.close(); } catch {}
+      });
+    });
+  } catch (e) {
+    console.error('[phoneCmd] udp send:', e.message);
+  }
+  const info = { wsTargets, udpPort: PHONE_CMD_UDP_PORT, devices: pairings.devices.length };
+  console.log(`\n  [phoneCmd] ${cmd} id=${cmdId} ws=${wsTargets} udp=: ${PHONE_CMD_UDP_PORT}`);
+  if (replyWs && replyWs.readyState === 1) {
+    replyWs.send(JSON.stringify({ type: 'phoneCmdDispatched', cmdId, cmd, ...info }));
+  }
+  appendPhoneCmdLog({ at: new Date().toISOString(), event: 'dispatch', cmd, cmdId, ...info });
+  return info;
+}
+
 async function main() {
   freeBridgePorts();
 
@@ -1186,7 +1505,16 @@ async function main() {
     restoreSessions();
 
     const pairPayload = JSON.stringify({
-      crb: 1, host: ip, port: CONFIG.port, code: pairState.code, fp: FINGERPRINT,
+      crb: 1,
+      host: ip,
+      port: CONFIG.port,
+      code: pairState.code,
+      fp: FINGERPRINT,
+      // LTE-first: телефон без WiFi поднимает iroh по ticket, /pair через туннель
+      ticket: (inet.enabled && tunnelInfo.ticket) ? tunnelInfo.ticket : null,
+      nodeId: tunnelInfo.nodeId || null,
+      internet: !!inet.enabled,
+      endpoints: bridgeEndpoints(),
     });
 
     console.log('');

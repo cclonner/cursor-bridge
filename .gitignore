@@ -3,7 +3,7 @@ bridge/config.json
 bridge/certs/
 bridge/bin/
 bridge/pairings.json
-bridge/internet.json
+bridge/logs/
 *.pem
 *.key
 .env

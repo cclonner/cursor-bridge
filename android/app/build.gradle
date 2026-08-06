@@ -10,8 +10,8 @@ android {
         applicationId "com.q.cursorbridge"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "0.1"
+        versionCode 14
+        versionName "0.1.14"
     }
 
     buildTypes {

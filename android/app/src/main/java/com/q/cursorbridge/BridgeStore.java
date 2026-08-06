@@ -7,6 +7,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -27,12 +28,16 @@ public final class BridgeStore {
         public String fp;         // отпечаток сертификата = id компьютера
         public boolean internet;  // разрешён коннект через интернет (p2p)
         public String nodeTicket; // iroh-адрес моста, если тот дал
+        public String[] endpoints; // WSS-кандидаты "kind|host:port" (kind: v6|ov), от моста
 
         JSONObject toJson() throws Exception {
             JSONObject j = new JSONObject();
             j.put("name", name).put("host", host).put("port", port)
              .put("token", token).put("fp", fp).put("internet", internet);
             if (nodeTicket != null) j.put("nodeTicket", nodeTicket);
+            if (endpoints != null && endpoints.length > 0) {
+                j.put("endpoints", new JSONArray(Arrays.asList(endpoints)));
+            }
             return j;
         }
 
@@ -45,8 +50,57 @@ public final class BridgeStore {
             b.fp = j.optString("fp", null);
             b.internet = j.optBoolean("internet", false);
             b.nodeTicket = j.has("nodeTicket") ? j.optString("nodeTicket", null) : null;
+            JSONArray eps = j.optJSONArray("endpoints");
+            if (eps != null && eps.length() > 0) {
+                String[] arr = new String[eps.length()];
+                int n = 0;
+                for (int i = 0; i < eps.length(); i++) {
+                    String s = eps.optString(i, null);
+                    if (s != null && !s.isEmpty()) arr[n++] = s;
+                }
+                b.endpoints = n == arr.length ? arr : Arrays.copyOf(arr, n);
+            }
             return b;
         }
+    }
+
+    /** Разобрать список {k,u} от моста (/pair, internetMsg) в строки "k|u" (только v6/ov). */
+    public static String[] parseEndpoints(JSONArray eps) {
+        if (eps == null) return new String[0];
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        for (int i = 0; i < eps.length(); i++) {
+            JSONObject e = eps.optJSONObject(i);
+            if (e == null) continue;
+            String k = e.optString("k", "ov");
+            String u = e.optString("u", null);
+            if (u == null || u.isEmpty()) continue;
+            if ("v6".equals(k) || "ov".equals(k)) out.add(k + "|" + u);
+        }
+        return out.toArray(new String[0]);
+    }
+
+    /** WSS-кандидаты для интернета из endpoints моста: сначала v6, затем overlay. */
+    public static String[][] remoteCandidates(Bridge b) {
+        if (b == null || b.endpoints == null) return new String[0][];
+        java.util.ArrayList<String[]> v6 = new java.util.ArrayList<>();
+        java.util.ArrayList<String[]> ov = new java.util.ArrayList<>();
+        for (String ep : b.endpoints) {
+            if (ep == null) continue;
+            int bar = ep.indexOf('|');
+            String kind = bar > 0 ? ep.substring(0, bar) : "ov";
+            String u = bar > 0 ? ep.substring(bar + 1) : ep;
+            int colon = u.lastIndexOf(':');
+            if (colon <= 0) continue;
+            String hostP = u.substring(0, colon);
+            String portS = u.substring(colon + 1);
+            int portN;
+            try { portN = Integer.parseInt(portS); } catch (Exception ignored) { continue; }
+            if (hostP.isEmpty() || portN <= 0) continue;
+            if ("v6".equals(kind)) v6.add(new String[]{hostP, String.valueOf(portN), "v6"});
+            else if ("ov".equals(kind)) ov.add(new String[]{hostP, String.valueOf(portN), "ov"});
+        }
+        v6.addAll(ov);
+        return v6.toArray(new String[0][]);
     }
 
     private final SharedPreferences prefs;
@@ -160,6 +214,20 @@ public final class BridgeStore {
         for (Bridge b : l) {
             if (b.fp != null && b.fp.equalsIgnoreCase(fp) && !ticket.equals(b.nodeTicket)) {
                 b.nodeTicket = ticket;
+                ch = true;
+            }
+        }
+        if (ch) save(l, activeFp());
+    }
+
+    /** Обновить WSS-эндпоинты (v6/overlay) моста — приходят в /pair и internetMsg. */
+    public synchronized void setEndpoints(String fp, String[] eps) {
+        if (fp == null || eps == null) return;
+        List<Bridge> l = list();
+        boolean ch = false;
+        for (Bridge b : l) {
+            if (b.fp != null && b.fp.equalsIgnoreCase(fp) && !Arrays.equals(b.endpoints, eps)) {
+                b.endpoints = eps;
                 ch = true;
             }
         }
